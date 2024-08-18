@@ -103,9 +103,9 @@ export type CanvasState =
         | LayerType.Text
         | LayerType.Note;
     }
-  | { mode: CanvasMode.Resizing }
+  | { mode: CanvasMode.Resizing; initialBounds: XYWH; corner: Side }
   | { mode: CanvasMode.Pressing; origin: Point }
-  | { mode: CanvasMode.Pencil; initialBounds: XYWH; corner: Side };
+  | { mode: CanvasMode.Pencil };
 
 export enum CanvasMode {
   None,
