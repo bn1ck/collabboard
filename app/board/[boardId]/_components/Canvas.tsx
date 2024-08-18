@@ -32,6 +32,8 @@ import {
 import { LiveObject } from "@liveblocks/client";
 import LayerPreview from "./LayerPreview";
 import SelectionBox from "./SelectionBox";
+import { setSeconds } from "date-fns";
+import SelectionTools from "./SelectionTools";
 interface CanvasProps {
   boardId: string;
 }
@@ -141,6 +143,12 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
     [canvasState]
   );
 
+  const unselectLayers = useMutation(({ self, setMyPresence }) => {
+    if (self.presence.selection.length > 0) {
+      setMyPresence({ selection: [] }, { addToHistory: true });
+    }
+  }, []);
+
   const onResizeHandlerPointerDown = useCallback(
     (corner: Side, initialBounds: XYWH) => {
       history.pause();
@@ -172,12 +180,37 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
 
       setMyPresence({ cursor: current });
     },
-    [canvasState, resizeSelectedLayer, camera]
+    [canvasState, resizeSelectedLayer, camera, translateSelectedLayers]
+  );
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      const point = pointerEventToCanvasPoint(e, camera);
+      if (canvasState.mode === CanvasMode.Inserting) {
+        return;
+      }
+
+      setCanvasState({
+        origin: point,
+        mode: CanvasMode.Pressing,
+      });
+    },
+    [camera, canvasState.mode]
   );
 
   const onPointerUp = useMutation(
     ({}, e) => {
       const point = pointerEventToCanvasPoint(e, camera);
+
+      if (
+        canvasState.mode === CanvasMode.None ||
+        canvasState.mode === CanvasMode.Pressing
+      ) {
+        unselectLayers();
+        setCanvasState({
+          mode: CanvasMode.None,
+        });
+      }
       if (canvasState.mode === CanvasMode.Inserting) {
         insertLayer(canvasState.layerType, point);
       } else {
@@ -187,7 +220,7 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
       }
       history.resume();
     },
-    [camera, canvasState, history, insertLayer]
+    [camera, canvasState, history, insertLayer, unselectLayers]
   );
 
   const onPointerLeave = useMutation(({ setMyPresence }) => {
@@ -244,8 +277,10 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
         undo={history.undo}
         redo={history.redo}
       />
+      <SelectionTools camera={camera} setLastUsedColor={setLastUsedColor} />
       <svg
         onPointerUp={onPointerUp}
+        onPointerDown={onPointerDown}
         onWheel={onWheel}
         onPointerMove={onPointerMove}
         onPointerLeave={onPointerLeave}
