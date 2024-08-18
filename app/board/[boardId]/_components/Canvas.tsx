@@ -1,6 +1,6 @@
 "use client";
 
-import React, { FC, useCallback, useMemo, useState } from "react";
+import React, { FC, useCallback, useEffect, useMemo, useState } from "react";
 import { nanoid } from "nanoid";
 import Info from "./Info";
 import Participants from "./Participants";
@@ -22,9 +22,11 @@ import {
   useMutation,
   useStorage,
   useOthersMapped,
+  useSelf,
 } from "@liveblocks/react";
 import { CursorsPresence } from "./CursorsPresence";
 import {
+  colorToCss,
   connectionIdToColor,
   findIntersectionLayersWithRectangle,
   penPointsToPathLayer,
@@ -34,9 +36,10 @@ import {
 import { LiveObject } from "@liveblocks/client";
 import LayerPreview from "./LayerPreview";
 import SelectionBox from "./SelectionBox";
-import { setSeconds } from "date-fns";
 import SelectionTools from "./SelectionTools";
-import { Liveblocks } from "@liveblocks/node";
+import Path from "./Path";
+import useDisableScrollBounce from "@/hooks/useDisableScrollBounce";
+import useDeleteLayers from "@/hooks/useDeleteLayers";
 interface CanvasProps {
   boardId: string;
 }
@@ -45,6 +48,8 @@ const MAX_LAYERS = 100;
 
 const Canvas: FC<CanvasProps> = ({ boardId }) => {
   const layerIds = useStorage((root) => root.layerIds);
+
+  const pencilDraft = useSelf((me) => me.presence.pencilDraft);
 
   const [canvasState, setCanvasState] = useState<CanvasState>({
     mode: CanvasMode.None,
@@ -56,6 +61,7 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
     b: 255,
   });
 
+  useDisableScrollBounce();
   const history = useHistory();
   const canUndo = useCanUndo();
   const canRedo = useCanRedo();
@@ -396,6 +402,33 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
     [setCanvasState, camera, history, canvasState.mode]
   );
 
+  const deleteLayers = useDeleteLayers();
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      switch (e.key) {
+        case "Backspace":
+          deleteLayers();
+          break;
+        case "z": {
+          if (e.ctrlKey || e.metaKey) {
+            if (e.shiftKey) {
+              history.redo();
+            } else {
+              history.undo();
+            }
+            break;
+          }
+        }
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [deleteLayers, history]);
+
   return (
     <main className="w-full h-full relative bg-neutral-100 touch-none">
       <Info boardId={boardId} />
@@ -440,6 +473,14 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
               />
             )}
           <CursorsPresence />
+          {pencilDraft != null && pencilDraft.length > 0 && (
+            <Path
+              points={pencilDraft}
+              fill={colorToCss(lastUsedColor)}
+              x={0}
+              y={0}
+            />
+          )}
         </g>
       </svg>
     </main>
