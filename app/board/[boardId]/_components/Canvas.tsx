@@ -26,6 +26,8 @@ import {
 import { CursorsPresence } from "./CursorsPresence";
 import {
   connectionIdToColor,
+  findIntersectionLayersWithRectangle,
+  penPointsToPathLayer,
   pointerEventToCanvasPoint,
   resizeBounds,
 } from "@/lib/utils";
@@ -34,6 +36,7 @@ import LayerPreview from "./LayerPreview";
 import SelectionBox from "./SelectionBox";
 import { setSeconds } from "date-fns";
 import SelectionTools from "./SelectionTools";
+import { Liveblocks } from "@liveblocks/node";
 interface CanvasProps {
   boardId: string;
 }
@@ -88,6 +91,106 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
 
       setMyPresence({ selection: [layerId] }, { addToHistory: true });
       setCanvasState({ mode: CanvasMode.None });
+    },
+    [lastUsedColor]
+  );
+
+  const startMultiSelection = useCallback((current: Point, origin: Point) => {
+    if (Math.abs(current.x - origin.x) + Math.abs(current.y - origin.y) > 5) {
+      setCanvasState({
+        mode: CanvasMode.SelectionNet,
+        origin,
+        current,
+      });
+    }
+  }, []);
+
+  const continueDrawing = useMutation(
+    ({ self, setMyPresence }, point: Point, e: React.PointerEvent) => {
+      const { pencilDraft } = self.presence;
+
+      if (
+        canvasState.mode !== CanvasMode.Pencil ||
+        e.buttons !== 1 ||
+        pencilDraft == null
+      ) {
+        return;
+      }
+
+      setMyPresence({
+        cursor: point,
+        pencilDraft:
+          pencilDraft.length === 1 &&
+          pencilDraft[0][0] === point.x &&
+          pencilDraft[0][1] === point.y
+            ? pencilDraft
+            : [...pencilDraft, [point.x, point.y, e.pressure]],
+      });
+    },
+    [canvasState.mode]
+  );
+
+  const updateSelectionNet = useMutation(
+    ({ storage, setMyPresence }, current: Point, origin: Point) => {
+      const layers = storage.get("layers").toImmutable();
+
+      setCanvasState({
+        mode: CanvasMode.SelectionNet,
+        origin,
+        current,
+      });
+
+      const ids = findIntersectionLayersWithRectangle(
+        layerIds,
+        layers,
+        origin,
+        current
+      );
+
+      setMyPresence({ selection: ids });
+    },
+    [layerIds]
+  );
+
+  const startDrawing = useMutation(
+    ({ setMyPresence }, point: Point, pressure: number) => {
+      setMyPresence({
+        pencilDraft: [[point.x, point.y, pressure]],
+        penColor: lastUsedColor,
+      });
+    },
+    [lastUsedColor]
+  );
+
+  const insertPath = useMutation(
+    ({ setMyPresence, storage, self }) => {
+      const liveLayers = storage.get("layers");
+      const { pencilDraft } = self.presence;
+
+      if (
+        pencilDraft == null ||
+        pencilDraft.length < 2 ||
+        liveLayers.size >= MAX_LAYERS
+      ) {
+        setMyPresence({
+          pencilDraft: null,
+        });
+        return;
+      }
+
+      const id = nanoid();
+      liveLayers.set(
+        id,
+        new LiveObject(penPointsToPathLayer(pencilDraft, lastUsedColor))
+      );
+
+      const liveLayerIds = storage.get("layerIds");
+      liveLayerIds.push(id);
+
+      setMyPresence({
+        pencilDraft: null,
+      });
+      setCanvasState({ mode: CanvasMode.Pencil });
     },
     [lastUsedColor]
   );
@@ -172,15 +275,29 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
     ({ setMyPresence }, e: React.PointerEvent) => {
       const current = pointerEventToCanvasPoint(e, camera);
 
-      if (canvasState.mode === CanvasMode.Translating) {
+      if (canvasState.mode === CanvasMode.Pressing) {
+        startMultiSelection(current, canvasState.origin);
+      } else if (canvasState.mode === CanvasMode.SelectionNet) {
+        updateSelectionNet(current, canvasState.origin);
+      } else if (canvasState.mode === CanvasMode.Translating) {
         translateSelectedLayers(current);
       } else if (canvasState.mode === CanvasMode.Resizing) {
         resizeSelectedLayer(current);
+      } else if (canvasState.mode === CanvasMode.Pencil) {
+        continueDrawing(current, e);
       }
 
       setMyPresence({ cursor: current });
     },
-    [canvasState, resizeSelectedLayer, camera, translateSelectedLayers]
+    [
+      canvasState,
+      resizeSelectedLayer,
+      camera,
+      translateSelectedLayers,
+      startMultiSelection,
+      updateSelectionNet,
+      continueDrawing,
+    ]
   );
 
   const onPointerDown = useCallback(
@@ -190,12 +307,17 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
         return;
       }
 
+      if (canvasState.mode === CanvasMode.Pencil) {
+        startDrawing(point, e.pressure);
+        return;
+      }
+
       setCanvasState({
         origin: point,
         mode: CanvasMode.Pressing,
       });
     },
-    [camera, canvasState.mode]
+    [camera, canvasState.mode, startDrawing]
   );
 
   const onPointerUp = useMutation(
@@ -210,8 +332,9 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
         setCanvasState({
           mode: CanvasMode.None,
         });
-      }
-      if (canvasState.mode === CanvasMode.Inserting) {
+      } else if (canvasState.mode === CanvasMode.Pencil) {
+        insertPath();
+      } else if (canvasState.mode === CanvasMode.Inserting) {
         insertLayer(canvasState.layerType, point);
       } else {
         setCanvasState({
@@ -220,7 +343,15 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
       }
       history.resume();
     },
-    [camera, canvasState, history, insertLayer, unselectLayers]
+    [
+      camera,
+      canvasState,
+      history,
+      insertLayer,
+      unselectLayers,
+      insertPath,
+      setCanvasState,
+    ]
   );
 
   const onPointerLeave = useMutation(({ setMyPresence }) => {
@@ -298,6 +429,16 @@ const Canvas: FC<CanvasProps> = ({ boardId }) => {
           <SelectionBox
             onResizeHandlerPointerDown={onResizeHandlerPointerDown}
           />
+          {canvasState.mode === CanvasMode.SelectionNet &&
+            canvasState.current != null && (
+              <rect
+                className="fill-blue-500/5 stroke-blue-500 stroke-1"
+                x={Math.min(canvasState.origin.x, canvasState.current.x)}
+                y={Math.min(canvasState.origin.y, canvasState.current.y)}
+                width={Math.abs(canvasState.origin.x - canvasState.current.x)}
+                height={Math.abs(canvasState.origin.y - canvasState.current.y)}
+              />
+            )}
           <CursorsPresence />
         </g>
       </svg>
